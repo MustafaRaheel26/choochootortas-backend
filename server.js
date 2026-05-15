@@ -11,6 +11,7 @@
  * 
  * Start with: npm start or npm run dev
  */
+require('dotenv').config();
 
 const express = require('express');
 const dotenv = require('dotenv');
@@ -29,6 +30,7 @@ const {
   reportsRoutes,
   authRoutes,
 } = require('./routes');
+const printJobsRoutes = require('./routes/printJobs');
 
 // Load environment variables from .env file
 dotenv.config();
@@ -87,6 +89,7 @@ app.get('/api/health', (req, res) => {
       settings: '/api/settings',
       reports: '/api/reports',
       auth: '/api/auth',
+      printJobs: '/api/print-jobs',
     },
   });
 });
@@ -98,6 +101,7 @@ app.use('/api/categories', categoriesRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/print-jobs', printJobsRoutes);
 
 // ==================== ERROR HANDLING (Must be last) ====================
 
@@ -125,6 +129,8 @@ app.listen(PORT, () => {
   console.log('   GET    /api/categories          - Get categories (Kiosk)');
   console.log('   GET    /api/settings/tax        - Get tax rate (Kiosk cart)');
   console.log('   POST   /api/auth/login          - Admin login (Admin)');
+  console.log('   GET    /api/print-jobs/pending  - Bridge polls for print jobs');
+  console.log('   POST   /api/print-jobs/:id/complete - Mark job completed');
   console.log('\n🔒 Protected Routes (require auth token):');
   console.log('   POST   /api/menu                - Add menu item');
   console.log('   PUT    /api/menu/:id            - Update menu item');

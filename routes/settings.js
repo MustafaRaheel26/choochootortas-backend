@@ -1,9 +1,10 @@
 /**
- * Settings Routes - MongoDB Version
+ * Settings Routes - MongoDB Version with Printer Status
  * 
  * Used by:
  * - ADMIN: GET, PUT (manage restaurant settings)
  * - KIOSK: GET (read tax rate for cart calculation)
+ * - ADMIN: GET printer status and test prints
  * 
  * Note: PUT requires authentication (admin only)
  */
@@ -13,6 +14,19 @@ const router = express.Router();
 const { Settings } = require('../models');
 const { authenticateToken } = require('../middleware/auth');
 const { ValidationError } = require('../middleware/errorHandler');
+const axios = require('axios');
+
+// Logger
+let logger = null;
+try {
+  logger = require('../utils/logger').logger;
+} catch (error) {
+  logger = {
+    info: (...args) => console.log('[INFO]', ...args),
+    error: (...args) => console.error('[ERROR]', ...args),
+    warn: (...args) => console.warn('[WARN]', ...args)
+  };
+}
 
 // Helper: Get or create default settings
 const getOrCreateSettings = async () => {
@@ -47,6 +61,10 @@ const getCurrencySymbol = (currency) => {
 
 // Debug: Check if Settings is loaded
 console.log('🔍 routes/settings.js - Settings model loaded:', typeof Settings === 'function' ? '✅' : '❌');
+
+// Bridge configuration
+const BRIDGE_URL = process.env.PRINTER_BRIDGE_URL || 'http://localhost:3001';
+const BRIDGE_API_KEY = process.env.PRINTER_BRIDGE_API_KEY || 'dev-bridge-key-12345';
 
 // ==================== PUBLIC GET ROUTES ====================
 
@@ -84,6 +102,170 @@ router.get('/tax', async (req, res, next) => {
     });
   } catch (error) {
     next(error);
+  }
+});
+
+// ==================== PRINTER STATUS ROUTES ====================
+
+/**
+ * GET /api/settings/printer-status
+ * Get current printer status from bridge
+ * Used by: ADMIN (Settings page)
+ */
+router.get('/printer-status', authenticateToken, async (req, res, next) => {
+  try {
+    const printingEnabled = process.env.ENABLE_PRINTING === 'true';
+    
+    if (!printingEnabled) {
+      return res.json({
+        success: true,
+        data: {
+          printingEnabled: false,
+          message: 'Printing is disabled in configuration',
+          bridgeConnected: false,
+          printers: {
+            kitchen: { status: 'disabled', error: null },
+            bar: { status: 'disabled', error: null },
+            customer: { status: 'disabled', error: null }
+          }
+        }
+      });
+    }
+
+    // Try to get status from bridge
+    let bridgeStatus = null;
+    let bridgeConnected = false;
+    
+    try {
+      const response = await axios.get(`${BRIDGE_URL}/health`, {
+        timeout: 3000,
+        headers: { 'X-API-Key': BRIDGE_API_KEY }
+      });
+      bridgeStatus = response.data;
+      bridgeConnected = true;
+    } catch (error) {
+      logger.warn('Bridge health check failed:', error.message);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        printingEnabled: true,
+        bridgeConnected: bridgeConnected,
+        bridgeUrl: BRIDGE_URL,
+        printers: {
+          kitchen: {
+            status: bridgeStatus?.printers?.kitchen?.status || 'unknown',
+            ip: bridgeStatus?.printers?.kitchen?.ip || '192.168.1.127',
+            enabled: bridgeStatus?.printers?.kitchen?.enabled || false,
+            error: bridgeStatus?.printers?.kitchen?.error || null
+          },
+          bar: {
+            status: bridgeStatus?.printers?.bar?.status || 'unknown',
+            ip: bridgeStatus?.printers?.bar?.ip || '192.168.1.136',
+            enabled: bridgeStatus?.printers?.bar?.enabled || false,
+            error: bridgeStatus?.printers?.bar?.error || null
+          },
+          customer: {
+            status: bridgeStatus?.printers?.customer?.status || 'unknown',
+            name: bridgeStatus?.printers?.customer?.name || 'USB Receipt Printer',
+            enabled: bridgeStatus?.printers?.customer?.enabled || false,
+            error: bridgeStatus?.printers?.customer?.error || null
+          }
+        },
+        lastPoll: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    logger.error('Failed to get printer status:', error);
+    res.json({
+      success: true,
+      data: {
+        printingEnabled: true,
+        bridgeConnected: false,
+        bridgeUrl: BRIDGE_URL,
+        error: error.message,
+        printers: {
+          kitchen: { status: 'error', error: error.message },
+          bar: { status: 'error', error: error.message },
+          customer: { status: 'error', error: error.message }
+        }
+      }
+    });
+  }
+});
+
+/**
+ * POST /api/settings/printer-test
+ * Send test print to specific printer
+ * Used by: ADMIN (Settings page - Test buttons)
+ */
+router.post('/printer-test', authenticateToken, async (req, res, next) => {
+  try {
+    const { printer } = req.body;
+    
+    if (!printer || !['kitchen', 'bar', 'customer'].includes(printer)) {
+      throw new ValidationError('Invalid printer. Must be kitchen, bar, or customer');
+    }
+    
+    const printingEnabled = process.env.ENABLE_PRINTING === 'true';
+    if (!printingEnabled) {
+      return res.status(400).json({
+        success: false,
+        error: 'Printing is disabled in configuration'
+      });
+    }
+
+    const testOrder = {
+      printer: printer,
+      orderData: {
+        orderNumber: 'TEST',
+        orderType: 'test',
+        items: [
+          {
+            name: 'TEST PRINT',
+            quantity: 1,
+            price: 0,
+            removed: [],
+            extras: [`Test print from Admin - ${new Date().toLocaleString()}`]
+          }
+        ],
+        notes: 'If you see this, printer is working correctly!'
+      }
+    };
+
+    // For customer receipt, add price fields
+    if (printer === 'customer') {
+      testOrder.orderData.subtotal = 0;
+      testOrder.orderData.tax = 0;
+      testOrder.orderData.totalPrice = 0;
+      testOrder.orderData.timestamp = new Date().toISOString();
+    }
+
+    const response = await axios.post(`${BRIDGE_URL}/print`, testOrder, {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': BRIDGE_API_KEY
+      },
+      timeout: 10000
+    });
+
+    if (response.data && response.data.success) {
+      logger.info(`Test print sent to ${printer} printer`);
+      res.json({
+        success: true,
+        message: `Test print sent to ${printer} printer`,
+        jobId: response.data.jobId
+      });
+    } else {
+      throw new Error(response.data?.error || 'Unknown error');
+    }
+  } catch (error) {
+    logger.error(`Test print failed for ${req.body.printer}:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to send test print'
+    });
   }
 });
 
@@ -131,7 +313,6 @@ router.put('/', authenticateToken, async (req, res, next) => {
     if (updates.phone !== undefined) settings.phone = updates.phone;
     if (updates.email !== undefined) settings.email = updates.email;
     
-    // No need to manually set updatedAt – timestamps plugin handles it
     await settings.save();
     
     console.log('✅ Settings updated successfully');

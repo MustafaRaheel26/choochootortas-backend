@@ -1,5 +1,5 @@
 /**
- * Orders Routes - MongoDB Version
+ * Orders Routes - MongoDB Version with Print Job Creation (Polling Architecture)
  * 
  * Used by:
  * - KIOSK: POST /api/orders (create order)
@@ -7,16 +7,32 @@
  * - KITCHEN + ADMIN: PUT /api/orders/:id/status (update status)
  * - ADMIN: GET /api/orders (view all orders)
  * - KIOSK: GET /api/orders/next-number (reserve order number for slip)
+ * 
+ * Printer integration: Creates print jobs in MongoDB for bridge to poll.
  */
 
 const express = require('express');
 const router = express.Router();
 const { Order } = require('../models');
+const PrintJob = require('../models/PrintJob');
 const { authenticateToken } = require('../middleware/auth');
 const { ValidationError, NotFoundError } = require('../middleware/errorHandler');
 
+// Logger
+let logger = null;
+try {
+  logger = require('../utils/logger').logger;
+} catch (error) {
+  logger = {
+    info: (...args) => console.log('[INFO]', ...args),
+    error: (...args) => console.error('[ERROR]', ...args),
+    warn: (...args) => console.warn('[WARN]', ...args)
+  };
+}
+
 // Debug: Check if Order is loaded
 console.log('🔍 routes/orders.js - Order model loaded:', typeof Order === 'function' ? '✅' : '❌');
+console.log('🔍 routes/orders.js - PrintJob model loaded:', typeof PrintJob === 'function' ? '✅' : '❌');
 
 // Helper: Get next sequential order number
 const getNextOrderNumber = async () => {
@@ -31,12 +47,82 @@ const getNextOrderNumber = async () => {
   }
 };
 
+// Helper: Create print jobs for kitchen, bar, and customer receipt
+const createPrintJobs = async (orderId, orderNumber, orderType, items, notes, subtotal, tax, totalPrice) => {
+  const jobs = [];
+  
+  // Prepare order data for kitchen/bar (no prices)
+  const productionOrderData = {
+    orderNumber,
+    orderType,
+    items: items.map(item => ({
+      name: item.name,
+      quantity: item.quantity,
+      removed: item.removed || [],
+      extras: item.extras || []
+    })),
+    notes: notes || ''
+  };
+  
+  // Kitchen job
+  const kitchenJob = new PrintJob({
+    jobId: `${Date.now()}_kitchen_${orderNumber}`,
+    type: 'kitchen',
+    orderId,
+    orderNumber,
+    orderData: productionOrderData,
+    status: 'pending'
+  });
+  jobs.push(kitchenJob.save());
+  
+  // Bar job
+  const barJob = new PrintJob({
+    jobId: `${Date.now()}_bar_${orderNumber}`,
+    type: 'bar',
+    orderId,
+    orderNumber,
+    orderData: productionOrderData,
+    status: 'pending'
+  });
+  jobs.push(barJob.save());
+  
+  // Customer receipt job (with prices)
+  const receiptOrderData = {
+    orderNumber,
+    orderType,
+    items: items.map(item => ({
+      name: item.name,
+      quantity: item.quantity,
+      price: item.price,
+      removed: item.removed || [],
+      extras: item.extras || []
+    })),
+    subtotal,
+    tax,
+    totalPrice,
+    notes: notes || '',
+    timestamp: new Date().toISOString()
+  };
+  
+  const receiptJob = new PrintJob({
+    jobId: `${Date.now()}_receipt_${orderNumber}`,
+    type: 'customer',
+    orderId,
+    orderNumber,
+    orderData: receiptOrderData,
+    status: 'pending'
+  });
+  jobs.push(receiptJob.save());
+  
+  await Promise.all(jobs);
+  logger.info(`Created print jobs for order #${orderNumber}: kitchen, bar, customer`);
+};
+
 // ==================== GET ROUTES ====================
 
 /**
  * GET /api/orders/next-number
  * Get the next order number WITHOUT creating an order
- * Used by: KIOSK (to show order number on slip before payment)
  */
 router.get('/next-number', async (req, res, next) => {
   try {
@@ -57,7 +143,6 @@ router.get('/next-number', async (req, res, next) => {
 /**
  * GET /api/orders
  * Get all orders (sorted newest first)
- * Used by: KITCHEN, ADMIN
  */
 router.get('/', async (req, res, next) => {
   try {
@@ -75,7 +160,6 @@ router.get('/', async (req, res, next) => {
 /**
  * GET /api/orders/kitchen/live
  * Get active orders for kitchen (new, preparing, ready - excludes completed)
- * Used by: KITCHEN DASHBOARD
  */
 router.get('/kitchen/live', async (req, res, next) => {
   try {
@@ -95,7 +179,6 @@ router.get('/kitchen/live', async (req, res, next) => {
 /**
  * GET /api/orders/:id
  * Get single order by ID
- * Used by: KITCHEN, ADMIN
  */
 router.get('/:id', async (req, res, next) => {
   try {
@@ -116,12 +199,11 @@ router.get('/:id', async (req, res, next) => {
 
 /**
  * POST /api/orders
- * Create a new order
- * Used by: KIOSK (when customer checks out)
+ * Create a new order and create print jobs for polling
  */
 router.post('/', async (req, res, next) => {
   try {
-    const { items, orderType } = req.body;
+    const { items, orderType, notes } = req.body;
     
     // Validate required fields
     if (!items || !Array.isArray(items) || items.length === 0) {
@@ -154,9 +236,11 @@ router.post('/', async (req, res, next) => {
     // Get next order number
     const nextNumber = await getNextOrderNumber();
     const orderNumber = nextNumber.toString().padStart(3, '0');
+    const orderId = `order_${orderNumber}`;
     
+    // Create order
     const newOrder = new Order({
-      id: `order_${orderNumber}`,
+      id: orderId,
       items: items,
       status: 'new',
       orderType: orderType,
@@ -168,6 +252,10 @@ router.post('/', async (req, res, next) => {
     });
     
     await newOrder.save();
+    
+    // Create print jobs (kitchen, bar, customer) - fire and forget
+    createPrintJobs(orderId, orderNumber, orderType, items, notes || '', subtotal, tax, totalPrice)
+      .catch(err => logger.error(`Failed to create print jobs for order #${orderNumber}:`, err));
     
     res.status(201).json({
       success: true,
@@ -184,7 +272,6 @@ router.post('/', async (req, res, next) => {
 /**
  * PUT /api/orders/:id/status
  * Update order status
- * Used by: KITCHEN, ADMIN
  */
 router.put('/:id/status', async (req, res, next) => {
   try {
@@ -210,6 +297,29 @@ router.put('/:id/status', async (req, res, next) => {
       message: `Order status updated to ${status}`,
       data: order,
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ==================== TEST ROUTES (Admin only) ====================
+
+/**
+ * GET /api/orders/test/create-print-jobs
+ * Manually create test print jobs (for debugging)
+ */
+router.get('/test/create-print-jobs', authenticateToken, async (req, res, next) => {
+  try {
+    const testOrderId = `order_999`;
+    const testOrderNumber = '999';
+    const testItems = [
+      { name: 'Test Item 1', quantity: 1, price: 10.99, removed: [], extras: [] },
+      { name: 'Test Item 2', quantity: 2, price: 5.50, removed: ['onions'], extras: ['cheese'] }
+    ];
+    
+    await createPrintJobs(testOrderId, testOrderNumber, 'eat-in', testItems, 'Test notes', 21.99, 1.81, 23.80);
+    
+    res.json({ success: true, message: 'Test print jobs created' });
   } catch (error) {
     next(error);
   }
