@@ -31,6 +31,7 @@ const {
   authRoutes,
 } = require('./routes');
 const printJobsRoutes = require('./routes/printJobs');
+const paymentRoutes = require('./routes/payment');
 
 // Load environment variables from .env file
 dotenv.config();
@@ -59,12 +60,13 @@ app.use(loggerMiddleware);
 app.use(corsMiddleware);
 
 // ==================== VERIFY MODELS ARE LOADED ====================
-const { Order, MenuItem, Category, Settings } = require('./models');
+const { Order, MenuItem, Category, Settings, PaymentSession } = require('./models');
 console.log('\n🔍 Model Verification:');
 console.log('   Order:', typeof Order === 'function' ? '✅ Loaded' : '❌ Failed');
 console.log('   MenuItem:', typeof MenuItem === 'function' ? '✅ Loaded' : '❌ Failed');
 console.log('   Category:', typeof Category === 'function' ? '✅ Loaded' : '❌ Failed');
 console.log('   Settings:', typeof Settings === 'function' ? '✅ Loaded' : '❌ Failed');
+console.log('   PaymentSession:', typeof PaymentSession === 'function' ? '✅ Loaded' : '❌ Failed');
 console.log('');
 
 // ==================== API ROUTES ====================
@@ -81,6 +83,7 @@ app.get('/api/health', (req, res) => {
       MenuItem: typeof MenuItem === 'function',
       Category: typeof Category === 'function',
       Settings: typeof Settings === 'function',
+      PaymentSession: typeof PaymentSession === 'function',
     },
     endpoints: {
       orders: '/api/orders',
@@ -90,6 +93,7 @@ app.get('/api/health', (req, res) => {
       reports: '/api/reports',
       auth: '/api/auth',
       printJobs: '/api/print-jobs',
+      payment: '/api/payment',
     },
   });
 });
@@ -102,6 +106,7 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/print-jobs', printJobsRoutes);
+app.use('/api/payment', paymentRoutes);
 
 // ==================== ERROR HANDLING (Must be last) ====================
 
@@ -131,6 +136,14 @@ app.listen(PORT, () => {
   console.log('   POST   /api/auth/login          - Admin login (Admin)');
   console.log('   GET    /api/print-jobs/pending  - Bridge polls for print jobs');
   console.log('   POST   /api/print-jobs/:id/complete - Mark job completed');
+  console.log('\n💳 Payment Endpoints:');
+  console.log('   POST   /api/payment/initiate    - Start payment session');
+  console.log('   GET    /api/payment/status/:id  - Check payment status');
+  console.log('   POST   /api/payment/cancel/:id  - Cancel payment');
+  console.log('   POST   /api/payment/test/approve - Test: approve payment');
+  console.log('   POST   /api/payment/test/decline - Test: decline payment');
+  console.log('   POST   /api/payment/test/timeout - Test: payment timeout');
+  console.log('   POST   /api/payment/test/delayed - Test: delayed response');
   console.log('\n🔒 Protected Routes (require auth token):');
   console.log('   POST   /api/menu                - Add menu item');
   console.log('   PUT    /api/menu/:id            - Update menu item');
