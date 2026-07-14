@@ -1,15 +1,15 @@
 /**
  * Order Model - MongoDB Schema
- * 
+ *
  * Matches the order structure from:
  * - KIOSK (when customer checks out)
  * - KITCHEN (for displaying orders)
  * - ADMIN (for order management)
- * 
- * Enhanced with payment tracking and print status fields
+ *
+ * Enhanced with payment tracking, print status, and email receipt fields
  */
 
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
 // Define the order item sub-schema
 const orderItemSchema = new mongoose.Schema(
@@ -20,20 +20,32 @@ const orderItemSchema = new mongoose.Schema(
     removed: { type: [String], default: [] },
     extras: { type: [String], default: [] },
   },
-  { _id: true }
+  { _id: true },
 );
 
 // Define print status sub-schema
 const printStatusSchema = new mongoose.Schema(
   {
-    kitchen: { type: String, enum: ['pending', 'printing', 'completed', 'failed'], default: 'pending' },
-    bar: { type: String, enum: ['pending', 'printing', 'completed', 'failed'], default: 'pending' },
-    customer: { type: String, enum: ['pending', 'printing', 'completed', 'failed'], default: 'pending' },
+    kitchen: {
+      type: String,
+      enum: ["pending", "printing", "completed", "failed"],
+      default: "pending",
+    },
+    bar: {
+      type: String,
+      enum: ["pending", "printing", "completed", "failed"],
+      default: "pending",
+    },
+    customer: {
+      type: String,
+      enum: ["pending", "printing", "completed", "failed"],
+      default: "pending",
+    },
     lastError: { type: String, default: null },
     retryCount: { type: Number, default: 0 },
     completedAt: { type: Date, default: null },
   },
-  { _id: true }
+  { _id: true },
 );
 
 // Define the main order schema
@@ -43,35 +55,47 @@ const orderSchema = new mongoose.Schema(
     items: [orderItemSchema],
     status: {
       type: String,
-      enum: ['new', 'preparing', 'ready', 'completed'],
-      default: 'new',
+      enum: ["new", "preparing", "ready", "completed"],
+      default: "new",
       required: true,
     },
     orderType: {
       type: String,
-      enum: ['eat-in', 'take-out'],
+      enum: ["eat-in", "take-out"],
       required: true,
     },
     totalPrice: { type: Number, default: 0 },
     tax: { type: Number, default: 0 },
     subtotal: { type: Number, default: 0 },
+
     // Payment tracking fields
     paymentSessionId: { type: String, default: null },
     paymentTransactionId: { type: String, default: null },
+
     // Print status tracking
     printStatus: { type: printStatusSchema, default: () => ({}) },
+
+    // Email receipt fields
+    customerEmail: { type: String, default: null },
+    receiptPreference: {
+      type: String,
+      enum: ["print", "email", "none"],
+      default: "print",
+    },
+    emailSent: { type: Boolean, default: false },
+    emailSentAt: { type: Date, default: null },
   },
   {
-    timestamps: true, // automatically adds createdAt & updatedAt
-  }
+    timestamps: true,
+  },
 );
 
-// Index for payment lookup
+// Indexes
 orderSchema.index({ paymentSessionId: 1 });
-// Index for print status queries
-orderSchema.index({ 'printStatus.kitchen': 1 });
-orderSchema.index({ 'printStatus.bar': 1 });
-orderSchema.index({ 'printStatus.customer': 1 });
+orderSchema.index({ "printStatus.kitchen": 1 });
+orderSchema.index({ "printStatus.bar": 1 });
+orderSchema.index({ "printStatus.customer": 1 });
+orderSchema.index({ customerEmail: 1 });
 
-const Order = mongoose.model('Order', orderSchema);
+const Order = mongoose.model("Order", orderSchema);
 module.exports = Order;
