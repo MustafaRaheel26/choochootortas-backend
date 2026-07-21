@@ -174,20 +174,23 @@ const createPrintJobs = async (
 const sendEmailReceipt = async (order) => {
   if (order.receiptPreference === "email" && order.customerEmail) {
     try {
+      logger.info(
+        `Attempting to send email to ${order.customerEmail} for order #${order.id}`,
+      );
       const result = await emailService.sendReceiptEmail(order);
       if (result.success) {
         order.emailSent = true;
         order.emailSentAt = new Date();
         await order.save();
-        logger.info(`Email receipt sent for order #${order.id}`);
+        logger.info(`✅ Email receipt sent for order #${order.id}`);
       } else {
         logger.warn(
-          `Email receipt failed for order #${order.id}: ${result.reason || result.error}`,
+          `❌ Email receipt failed for order #${order.id}: ${result.reason || result.error}`,
         );
       }
     } catch (error) {
       logger.error(
-        `Email receipt error for order #${order.id}: ${error.message}`,
+        `❌ Email receipt error for order #${order.id}: ${error.message}`,
       );
     }
   } else {
@@ -298,6 +301,56 @@ router.get("/:id/print-status", authenticateToken, async (req, res, next) => {
   }
 });
 
+/**
+ * GET /api/orders/test-email
+ * Test email sending directly (for debugging)
+ */
+router.get("/test-email", async (req, res, next) => {
+  try {
+    const testOrder = {
+      id: "order_TEST",
+      items: [
+        {
+          name: "Test Item 1",
+          quantity: 1,
+          price: 10.0,
+          removed: [],
+          extras: [],
+        },
+        {
+          name: "Test Item 2",
+          quantity: 2,
+          price: 5.5,
+          removed: ["onions"],
+          extras: ["cheese"],
+        },
+      ],
+      subtotal: 21.0,
+      tax: 1.73,
+      totalPrice: 22.73,
+      createdAt: new Date(),
+      orderType: "eat-in",
+      customerEmail: "mustafaraheel26@gmail.com",
+      receiptPreference: "email",
+    };
+
+    logger.info("Testing email service...");
+    const result = await emailService.sendReceiptEmail(testOrder);
+
+    res.json({
+      success: true,
+      message: "Email test completed",
+      result: result,
+    });
+  } catch (error) {
+    logger.error("Test email error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
 // ==================== POST ROUTES ====================
 
 /**
@@ -315,7 +368,7 @@ router.post("/", async (req, res, next) => {
       notes,
       paymentSessionId,
       customerEmail,
-      receiptPreference = "print", // 'print', 'email', 'none'
+      receiptPreference = "print",
     } = req.body;
 
     // Validate required fields
@@ -438,6 +491,9 @@ router.post("/", async (req, res, next) => {
       `Order created after payment approval: #${orderNumber} for session ${paymentSessionId}`,
     );
 
+    // SEND EMAIL FIRST (before print jobs)
+    await sendEmailReceipt(newOrder);
+
     // Create print jobs (kitchen, bar, customer) - only if receipt preference is 'print'
     if (receiptPreference === "print") {
       await createPrintJobs(
@@ -461,9 +517,6 @@ router.post("/", async (req, res, next) => {
         `Skipped customer receipt print for order #${orderNumber} (preference: ${receiptPreference})`,
       );
     }
-
-    // Send email receipt if customer opted in
-    await sendEmailReceipt(newOrder);
 
     res.status(201).json({
       success: true,
